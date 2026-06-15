@@ -1,0 +1,2 @@
+# Xinji
+journal
