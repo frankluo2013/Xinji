@@ -1,0 +1,567 @@
+// 心记私人日记 App v3 - 全新独立版本
+import { useState, useEffect, useCallback } from "react";
+
+const STORAGE_KEY = "xj_diary_v3";
+const PW_KEY = "xj_pw_v3";
+const WEEKDAYS = ["日","一","二","三","四","五","六"];
+
+function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function fmtDate(s) {
+  const [y,m,d] = s.split("-");
+  return `${y}年${parseInt(m)}月${parseInt(d)}日`;
+}
+function fmtMonth(s) {
+  const [y,m] = s.split("-");
+  return `${y}年${parseInt(m)}月`;
+}
+function getWeekday(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  return WEEKDAYS[d.getDay()];
+}
+function escHtml(s) {
+  return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
+}
+function normalizeDate(s) {
+  s = s.replace(/年/,"-").replace(/月/,"-").replace(/日/,"").replace(/\//g,"-");
+  const p = s.split("-");
+  if (p.length===3) return `${p[0]}-${p[1].padStart(2,"0")}-${p[2].padStart(2,"0")}`;
+  return s;
+}
+
+// ── STYLES ──
+const S = {
+  app: { fontFamily:"'PingFang SC','Microsoft YaHei','Hiragino Sans GB',sans-serif", background:"#2D1B4E", minHeight:"100vh", color:"#2a1e3a", userSelect:"none" },
+  // Lock
+  lockWrap: { background:"linear-gradient(160deg,#1a1025 0%,#2D1B4E 50%,#4A3070 100%)", minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 24px" },
+  lockLogo: { textAlign:"center", marginBottom:40 },
+  lockTitle: { fontSize:32, fontWeight:300, color:"#E8C97A", letterSpacing:8, fontFamily:"'STSong','SimSun',serif", margin:"8px 0 4px" },
+  lockSub: { color:"#7a6890", fontSize:13, letterSpacing:2 },
+  lockCard: { background:"rgba(255,255,255,0.06)", border:"1px solid rgba(201,168,76,0.2)", borderRadius:24, padding:"32px 28px", width:"100%", maxWidth:360, backdropFilter:"blur(12px)" },
+  dots: { display:"flex", justifyContent:"center", gap:16, marginBottom:32 },
+  dot: (filled,err) => ({ width:14, height:14, borderRadius:"50%", border:`2px solid ${err?"#c0392b":filled?"#C9A84C":"rgba(201,168,76,0.5)"}`, background:err?"#c0392b":filled?"#C9A84C":"transparent", transition:"all 0.2s" }),
+  numpad: { display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 },
+  numBtn: (empty) => ({ background:empty?"transparent":"rgba(255,255,255,0.08)", border:empty?"1px solid transparent":"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:"18px 8px", color:"#fff", fontSize:22, fontWeight:300, cursor:empty?"default":"pointer", textAlign:"center", fontFamily:"inherit" }),
+  lockHint: { textAlign:"center", marginTop:20, color:"#7a6890", fontSize:12 },
+  linkA: { color:"#C9A84C", textDecoration:"none", cursor:"pointer" },
+  // Nav
+  topnav: { background:"#2D1B4E", padding:"52px 20px 16px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:100, boxShadow:"0 2px 16px rgba(45,27,78,0.3)" },
+  navTitle: { fontSize:20, fontWeight:400, color:"#E8C97A", letterSpacing:3, fontFamily:"'STSong','SimSun',serif" },
+  navBtns: { display:"flex", gap:8 },
+  iconBtn: { width:38, height:38, borderRadius:10, background:"rgba(255,255,255,0.1)", border:"none", color:"#E8C97A", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" },
+  // Stats
+  statsBar: { display:"flex", background:"#2D1B4E", padding:"0 16px 16px" },
+  statItem: { flex:1, textAlign:"center" },
+  statNum: { color:"#C9A84C", fontSize:20, fontWeight:600 },
+  statLabel: { color:"#7a6890", fontSize:11, marginTop:2 },
+  // Tabs
+  monthTabs: { background:"#2D1B4E", padding:"0 16px 12px", display:"flex", gap:8, overflowX:"auto", scrollbarWidth:"none" },
+  tab: (active) => ({ flexShrink:0, padding:"6px 16px", borderRadius:20, border:`1px solid ${active?"#C9A84C":"rgba(201,168,76,0.3)"}`, background:active?"#C9A84C":"transparent", color:active?"#2D1B4E":"#7a6890", fontSize:13, cursor:"pointer", whiteSpace:"nowrap", fontWeight:active?600:400 }),
+  // Search
+  searchBar: { display:"flex", alignItems:"center", gap:10, background:"rgba(255,255,255,0.1)", borderRadius:12, padding:"8px 14px", margin:"0 16px 12px", border:"1px solid rgba(255,255,255,0.15)" },
+  searchInput: { flex:1, background:"transparent", border:"none", color:"#fff", fontSize:14, outline:"none", fontFamily:"inherit" },
+  // List
+  diaryList: { flex:1, padding:16, overflowY:"auto", background:"#FBF6EE" },
+  emptyState: { textAlign:"center", padding:"80px 24px", color:"#7a6890" },
+  card: { background:"#fff", borderRadius:16, padding:18, marginBottom:12, boxShadow:"0 2px 12px rgba(45,27,78,0.08)", cursor:"pointer", borderLeft:"4px solid #C9A84C", position:"relative" },
+  cardDate: { fontSize:12, color:"#7a6890", display:"flex", alignItems:"center", gap:6, marginBottom:8 },
+  wdayBadge: { background:"#2D1B4E", color:"#E8C97A", fontSize:10, padding:"2px 6px", borderRadius:4 },
+  importedTag: { display:"inline-block", fontSize:10, background:"#eaf4ff", color:"#2980b9", borderRadius:4, padding:"1px 6px", marginLeft:6 },
+  cardTitle: { fontSize:16, color:"#2a1e3a", marginBottom:6, fontWeight:600 },
+  cardPreview: { fontSize:14, color:"#666", lineHeight:1.6, overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" },
+  cardMood: { fontSize:18, position:"absolute", top:16, right:16 },
+  fab: { position:"fixed", bottom:28, right:24, width:60, height:60, borderRadius:"50%", background:"linear-gradient(135deg,#C9A84C 0%,#b8830a 100%)", border:"none", color:"#2D1B4E", fontSize:28, cursor:"pointer", boxShadow:"0 6px 24px rgba(201,168,76,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 },
+  addFirstBtn: { display:"inline-block", marginTop:12, padding:"10px 24px", background:"#C9A84C", color:"#2D1B4E", borderRadius:20, fontSize:14, fontWeight:600, cursor:"pointer", border:"none" },
+  // Editor
+  editorHeader: { background:"#2D1B4E", padding:"52px 16px 16px", display:"flex", alignItems:"center", gap:12, position:"sticky", top:0, zIndex:100 },
+  backBtn: { width:36, height:36, borderRadius:10, background:"rgba(255,255,255,0.1)", border:"none", color:"#E8C97A", fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" },
+  saveBtn: { padding:"8px 20px", borderRadius:20, background:"#C9A84C", border:"none", color:"#2D1B4E", fontSize:14, fontWeight:600, cursor:"pointer" },
+  editorMeta: { background:"#fff", margin:"16px 16px 0", borderRadius:16, padding:16, boxShadow:"0 2px 8px rgba(45,27,78,0.06)" },
+  metaRow: { display:"flex", alignItems:"center", gap:12, padding:"8px 0", borderBottom:"1px solid #F0E8D8" },
+  metaLabel: { fontSize:13, color:"#7a6890", width:48, flexShrink:0 },
+  metaInput: { flex:1, border:"none", background:"transparent", fontSize:14, color:"#2a1e3a", outline:"none", fontFamily:"inherit" },
+  moodPicker: { display:"flex", gap:8, flexWrap:"wrap" },
+  moodOpt: (sel) => ({ fontSize:22, cursor:"pointer", padding:4, borderRadius:8, border:`2px solid ${sel?"#C9A84C":"transparent"}`, background:sel?"#F0E8D8":"transparent" }),
+  weatherOpt: (sel) => ({ fontSize:20, cursor:"pointer", padding:4, borderRadius:8, border:`2px solid ${sel?"#C9A84C":"transparent"}`, background:sel?"#F0E8D8":"transparent" }),
+  editorBody: { margin:"12px 16px 100px", borderRadius:16, overflow:"hidden", boxShadow:"0 2px 8px rgba(45,27,78,0.06)" },
+  titleInput: { width:"100%", padding:"16px 16px 8px", background:"#fff", border:"none", fontSize:20, fontWeight:600, color:"#2a1e3a", outline:"none", fontFamily:"inherit", borderBottom:"1px solid #F0E8D8", boxSizing:"border-box" },
+  contentInput: { width:"100%", padding:16, background:"#fff", border:"none", fontSize:15, color:"#2a1e3a", lineHeight:1.9, outline:"none", resize:"none", minHeight:280, fontFamily:"inherit", boxSizing:"border-box" },
+  charCount: { padding:"8px 16px", background:"#fff", fontSize:12, color:"#7a6890", textAlign:"right", borderTop:"1px solid #F0E8D8" },
+  // View
+  viewHeader: { background:"#2D1B4E", padding:"52px 16px 16px", display:"flex", alignItems:"center", gap:12 },
+  viewActions: { display:"flex", gap:8 },
+  delBtn: { padding:"8px 16px", borderRadius:20, background:"rgba(192,57,43,0.15)", border:"1px solid rgba(192,57,43,0.3)", color:"#e74c3c", fontSize:13, cursor:"pointer" },
+  viewBody: { padding:"20px 16px 100px", overflowY:"auto", flex:1, background:"#FBF6EE" },
+  viewDateStrip: { display:"flex", alignItems:"center", gap:10, marginBottom:16, paddingBottom:16, borderBottom:"1px solid #F0E8D8" },
+  bigDate: { fontSize:48, fontWeight:200, color:"#2D1B4E", fontFamily:"'STSong','SimSun',serif", lineHeight:1 },
+  tagChip: { padding:"4px 12px", borderRadius:20, background:"#F0E8D8", fontSize:13, color:"#7a6890", display:"flex", alignItems:"center", gap:4 },
+  viewTitle: { fontSize:22, fontWeight:700, color:"#2a1e3a", marginBottom:16 },
+  viewContent: { fontSize:16, color:"#2a1e3a", lineHeight:2.0, whiteSpace:"pre-wrap", wordBreak:"break-all" },
+  // Settings
+  settingsHeader: { padding:"52px 20px 20px", display:"flex", alignItems:"center", gap:12 },
+  settingsBody: { padding:16, flex:1, overflowY:"auto" },
+  settingsSection: { marginBottom:24 },
+  sectionTitle: { color:"#7a6890", fontSize:12, fontWeight:500, letterSpacing:2, textTransform:"uppercase", marginBottom:8, paddingLeft:4 },
+  settingsCard: { background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:16, overflow:"hidden" },
+  settingsItem: { display:"flex", alignItems:"center", padding:16, borderBottom:"1px solid rgba(255,255,255,0.06)", cursor:"pointer" },
+  sIcon: { fontSize:20, width:36 },
+  sTitle: { color:"#fff", fontSize:15 },
+  sSub: { color:"#7a6890", fontSize:12, marginTop:2 },
+  sArrow: { color:"#7a6890", fontSize:16 },
+  // Import
+  importHeader: { background:"#2D1B4E", padding:"52px 16px 16px", display:"flex", alignItems:"center", gap:12 },
+  importZone: { border:"2px dashed #C9A84C", borderRadius:16, padding:"40px 24px", textAlign:"center", background:"rgba(201,168,76,0.04)", marginBottom:24, cursor:"pointer" },
+  importBtn: { width:"100%", padding:16, background:"linear-gradient(135deg,#2D1B4E 0%,#4A3070 100%)", border:"none", borderRadius:16, color:"#E8C97A", fontSize:16, fontWeight:600, cursor:"pointer", marginBottom:12 },
+  formatItem: { background:"#fff", borderRadius:12, padding:"14px 16px", display:"flex", alignItems:"flex-start", gap:12, boxShadow:"0 2px 8px rgba(45,27,78,0.06)", marginBottom:8 },
+  importTA: { width:"100%", minHeight:160, borderRadius:12, border:"1px solid #F0E8D8", padding:14, fontSize:14, fontFamily:"inherit", color:"#2a1e3a", background:"#fff", outline:"none", resize:"vertical", lineHeight:1.7, boxSizing:"border-box" },
+  // Modal
+  overlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:500, display:"flex", alignItems:"flex-end", justifyContent:"center", backdropFilter:"blur(4px)" },
+  modal: { background:"#FBF6EE", borderRadius:"24px 24px 0 0", padding:24, width:"100%", maxWidth:500, paddingBottom:40 },
+  modalInput: { width:"100%", padding:"14px 16px", border:"1px solid #F0E8D8", borderRadius:12, fontSize:15, fontFamily:"inherit", color:"#2a1e3a", background:"#fff", outline:"none", marginBottom:12, boxSizing:"border-box" },
+  modalBtns: { display:"flex", gap:10 },
+  modalBtnCancel: { flex:1, padding:14, borderRadius:12, border:"none", fontSize:15, cursor:"pointer", background:"#F0E8D8", color:"#7a6890", fontFamily:"inherit" },
+  modalBtnConfirm: { flex:1, padding:14, borderRadius:12, border:"none", fontSize:15, cursor:"pointer", background:"#2D1B4E", color:"#E8C97A", fontWeight:600, fontFamily:"inherit" },
+  // Toast
+  toast: (show) => ({ position:"fixed", bottom:100, left:"50%", transform:`translateX(-50%) translateY(${show?0:20}px)`, background:"#2D1B4E", color:"#E8C97A", padding:"10px 24px", borderRadius:24, fontSize:14, opacity:show?1:0, transition:"all 0.3s", zIndex:999, whiteSpace:"nowrap", boxShadow:"0 4px 20px rgba(0,0,0,0.3)", pointerEvents:"none" }),
+};
+
+export default function App() {
+  const [screen, setScreen] = useState("lock"); // lock|main|editor|view|settings|import
+  const [entries, setEntries] = useState([]);
+  const [pin, setPin] = useState("");
+  const [pinErr, setPinErr] = useState(false);
+  const [currentMonth, setCurrentMonth] = useState("");
+  const [searchQ, setSearchQ] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [viewId, setViewId] = useState(null);
+  const [editDate, setEditDate] = useState(todayStr());
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editMood, setEditMood] = useState("😊");
+  const [editWeather, setEditWeather] = useState("☀️");
+  const [toast, setToast] = useState("");
+  const [showToast, setShowToast] = useState(false);
+  const [showPwModal, setShowPwModal] = useState(false);
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [importText, setImportText] = useState("");
+
+  const load = useCallback(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]"); } catch(e) { return []; }
+  }, []);
+  const save = useCallback((data) => { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }, []);
+  const getPw = () => localStorage.getItem(PW_KEY)||"";
+  const setPwStore = (p) => localStorage.setItem(PW_KEY, p);
+
+  useEffect(() => {
+    const data = load();
+    data.sort((a,b)=>b.date.localeCompare(a.date));
+    setEntries(data);
+    if (!getPw()) setShowPwModal(true);
+  }, []);
+
+  const showMsg = useCallback((msg) => {
+    setToast(msg); setShowToast(true);
+    setTimeout(()=>setShowToast(false), 2200);
+  }, []);
+
+  // ── LOCK ──
+  const handleDigit = (d) => {
+    if (pin.length >= 4) return;
+    const next = pin + d;
+    setPin(next);
+    if (next.length === 4) {
+      setTimeout(() => {
+        const stored = getPw();
+        if (!stored || next === stored) {
+          setPin(""); setPinErr(false);
+          const data = load(); data.sort((a,b)=>b.date.localeCompare(a.date));
+          setEntries(data);
+          const months = [...new Set(data.map(e=>e.date.slice(0,7)))].sort((a,b)=>b.localeCompare(a));
+          const now = new Date();
+          const tm = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+          setCurrentMonth(months[0]||tm);
+          setScreen("main");
+        } else {
+          setPinErr(true);
+          setTimeout(()=>{ setPin(""); setPinErr(false); }, 800);
+        }
+      }, 150);
+    }
+  };
+  const handleDel = () => { setPin(p=>p.slice(0,-1)); setPinErr(false); };
+
+  // ── MONTH ──
+  const months = [...new Set(entries.map(e=>e.date.slice(0,7)))].sort((a,b)=>b.localeCompare(a));
+  const now0 = new Date();
+  const thisMonth = `${now0.getFullYear()}-${String(now0.getMonth()+1).padStart(2,"0")}`;
+  const allMonths = months.includes(thisMonth)?months:[thisMonth,...months];
+
+  const filteredEntries = entries.filter(e => {
+    const inMonth = currentMonth==="all" || e.date.startsWith(currentMonth);
+    const inSearch = !searchQ || (e.title||"").includes(searchQ)||(e.content||"").includes(searchQ)||e.date.includes(searchQ);
+    return inMonth && inSearch;
+  });
+
+  // ── STATS ──
+  const statMonth = entries.filter(e=>e.date.startsWith(thisMonth)).length;
+  const statDays = new Set(entries.map(e=>e.date)).size;
+
+  // ── EDITOR ──
+  const openNew = () => {
+    setEditId(null); setEditDate(todayStr()); setEditTitle(""); setEditContent(""); setEditMood("😊"); setEditWeather("☀️");
+    setScreen("editor");
+  };
+  const openEdit = (e) => {
+    setEditId(e.id); setEditDate(e.date); setEditTitle(e.title||""); setEditContent(e.content||""); setEditMood(e.mood||"😊"); setEditWeather(e.weather||"☀️");
+    setScreen("editor");
+  };
+  const doSave = () => {
+    if (!editContent.trim() && !editTitle.trim()) { showMsg("请输入日记内容"); return; }
+    let next;
+    if (editId) {
+      next = entries.map(e=>e.id===editId ? {...e, date:editDate, title:editTitle, content:editContent, mood:editMood, weather:editWeather, updatedAt:Date.now()} : e);
+    } else {
+      next = [{id:genId(), date:editDate, title:editTitle, content:editContent, mood:editMood, weather:editWeather, createdAt:Date.now()}, ...entries];
+    }
+    next.sort((a,b)=>b.date.localeCompare(a.date));
+    setEntries(next); save(next);
+    setCurrentMonth(editDate.slice(0,7));
+    showMsg("✅ 日记已保存"); setScreen("main");
+  };
+
+  // ── VIEW ──
+  const viewEntry = entries.find(e=>e.id===viewId);
+  const doDelete = () => {
+    if (!confirm("确定删除这篇日记？")) return;
+    const next = entries.filter(e=>e.id!==viewId);
+    setEntries(next); save(next); showMsg("🗑 已删除"); setScreen("main");
+  };
+
+  // ── PASSWORD ──
+  const doSavePw = () => {
+    if (newPw.length!==4||!/^\d{4}$/.test(newPw)) { showMsg("请输入4位数字"); return; }
+    if (newPw!==confirmPw) { showMsg("两次输入不一致"); return; }
+    setPwStore(newPw); setShowPwModal(false); setNewPw(""); setConfirmPw("");
+    showMsg("✅ 密码已设置");
+    if (screen==="lock") { setScreen("main"); }
+  };
+
+  // ── EXPORT ──
+  const doExportJSON = () => {
+    const blob = new Blob([JSON.stringify({app:"心记",version:1,exportedAt:new Date().toISOString(),entries},null,2)],{type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=`心记日记_${todayStr().replace(/-/g,"")}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    showMsg("📤 导出成功");
+  };
+  const doExportTxt = () => {
+    const lines = entries.map(e=>`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📅 ${e.date}  星期${getWeekday(e.date)}  ${e.weather||""}  ${e.mood||""}\n${e.title?"📌 "+e.title+"\n":""}\n${e.content||""}\n`).join("\n");
+    const blob = new Blob([`心记 · 私人日记\n导出时间：${new Date().toLocaleString("zh-CN")}\n共 ${entries.length} 篇\n\n`+lines],{type:"text/plain;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=`心记日记_${todayStr().replace(/-/g,"")}.txt`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    showMsg("📄 文本导出成功");
+  };
+
+  // ── IMPORT ──
+  const handleFileImport = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      if (file.name.endsWith(".json")) importJSON(text);
+      else importText(text);
+    };
+    reader.readAsText(file,"utf-8");
+    e.target.value="";
+  };
+  const importJSON = (text) => {
+    try {
+      let data = JSON.parse(text);
+      let arr = Array.isArray(data)?data:data.entries||[];
+      let count=0;
+      arr.forEach(e=>{ if(!e.id)e.id=genId(); if(!e.date)return; e.imported=true; if(!entries.find(x=>x.id===e.id)){entries.push(e);count++;} });
+      const next=[...entries].sort((a,b)=>b.date.localeCompare(a.date));
+      setEntries(next); save(next); setCurrentMonth("all");
+      showMsg(`✅ 导入 ${count} 篇`); setScreen("main");
+    } catch { showMsg("❌ 文件格式错误"); }
+  };
+  const importText = (text) => {
+    const patterns=[/^(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/,/^(\d{4}年\d{1,2}月\d{1,2}日)/,/^日期[：:]\s*(\d{4}[-\/年]\d{1,2}[-\/月]\d{1,2})/];
+    const lines=text.split("\n"); const chunks=[]; let cur=null;
+    lines.forEach(line=>{ const t=line.trim(); let md=null; for(const p of patterns){const m=t.match(p);if(m){md=normalizeDate(m[1]);break;}} if(md){if(cur)chunks.push(cur);cur={date:md,lines:[]};} else if(cur)cur.lines.push(line); });
+    if(cur)chunks.push(cur);
+    if(chunks.length===0)chunks.push({date:todayStr(),lines});
+    let count=0;
+    const newEntries=[...entries];
+    chunks.forEach(chunk=>{
+      const content=chunk.lines.join("\n").trim(); if(!content)return;
+      const firstLine=chunk.lines.find(l=>l.trim())||""; let title="",body=content;
+      if(firstLine.startsWith("标题：")||firstLine.startsWith("标题:")){title=firstLine.replace(/^标题[：:]/,"").trim();body=chunk.lines.slice(chunk.lines.indexOf(firstLine)+1).join("\n").trim();}
+      else if(firstLine.length>0&&firstLine.length<=30&&!firstLine.includes("。")&&!firstLine.includes("，")){title=firstLine;body=chunk.lines.slice(chunk.lines.indexOf(firstLine)+1).join("\n").trim();}
+      newEntries.push({id:genId(),date:chunk.date,title,content:body||content,mood:"",weather:"",imported:true,createdAt:Date.now()});
+      count++;
+    });
+    newEntries.sort((a,b)=>b.date.localeCompare(a.date));
+    setEntries(newEntries); save(newEntries); setImportText(""); setCurrentMonth("all");
+    showMsg(`✅ 导入 ${count} 篇`); setScreen("main");
+  };
+  const doImportTextarea = () => { if(!importText.trim()){showMsg("请先粘贴内容");return;} importText(importText); };
+
+  // ── RENDER ──
+  return (
+    <div style={S.app}>
+
+      {/* ── LOCK ── */}
+      {screen==="lock" && (
+        <div style={S.lockWrap}>
+          <div style={S.lockLogo}>
+            <div style={{fontSize:64}}>📖</div>
+            <div style={S.lockTitle}>心 记</div>
+            <div style={S.lockSub}>私人日记 · 只属于你的世界</div>
+          </div>
+          <div style={S.lockCard}>
+            <div style={S.dots}>
+              {[0,1,2,3].map(i=><div key={i} style={S.dot(i<pin.length,pinErr)}/>)}
+            </div>
+            <div style={S.numpad}>
+              {["1","2","3","4","5","6","7","8","9"].map(d=>(
+                <button key={d} style={S.numBtn(false)} onClick={()=>handleDigit(d)}>{d}</button>
+              ))}
+              <button style={S.numBtn(true)} disabled />
+              <button style={S.numBtn(false)} onClick={()=>handleDigit("0")}>0</button>
+              <button style={{...S.numBtn(false),fontSize:16,color:"#7a6890"}} onClick={handleDel}>⌫</button>
+            </div>
+            <div style={S.lockHint}>
+              {getPw() ? "请输入4位密码解锁" : "首次使用"} &nbsp;
+              <span style={S.linkA} onClick={()=>setShowPwModal(true)}>
+                {getPw() ? "忘记密码？" : "点击设置密码"}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MAIN ── */}
+      {screen==="main" && (
+        <div style={{background:"#FBF6EE",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+          <div style={S.topnav}>
+            <span style={S.navTitle}>心 记</span>
+            <div style={S.navBtns}>
+              <button style={S.iconBtn} onClick={()=>setShowSearch(s=>!s)}>🔍</button>
+              <button style={S.iconBtn} onClick={()=>setScreen("settings")}>⚙️</button>
+            </div>
+          </div>
+          {showSearch && (
+            <div style={{...S.searchBar, background:"#2D1B4E", margin:"0 0 0 0", borderRadius:0, padding:"8px 16px"}}>
+              <span style={{color:"#7a6890"}}>🔍</span>
+              <input style={S.searchInput} placeholder="搜索日记…" value={searchQ} onChange={e=>setSearchQ(e.target.value)} autoFocus />
+              <span style={{...S.linkA,fontSize:14}} onClick={()=>{setShowSearch(false);setSearchQ("");}}>取消</span>
+            </div>
+          )}
+          <div style={S.statsBar}>
+            <div style={S.statItem}><div style={S.statNum}>{entries.length}</div><div style={S.statLabel}>篇日记</div></div>
+            <div style={S.statItem}><div style={S.statNum}>{statMonth}</div><div style={S.statLabel}>本月</div></div>
+            <div style={S.statItem}><div style={S.statNum}>{statDays}</div><div style={S.statLabel}>坚持天数</div></div>
+          </div>
+          <div style={S.monthTabs}>
+            <button style={S.tab(currentMonth==="all")} onClick={()=>setCurrentMonth("all")}>全部</button>
+            {allMonths.map(m=><button key={m} style={S.tab(currentMonth===m)} onClick={()=>setCurrentMonth(m)}>{fmtMonth(m)}</button>)}
+          </div>
+          <div style={S.diaryList}>
+            {filteredEntries.length===0 ? (
+              <div style={S.emptyState}>
+                <div style={{fontSize:48,marginBottom:16}}>✍️</div>
+                <p style={{fontSize:15,lineHeight:1.8}}>还没有日记<br/>点击下方按钮开始记录</p>
+                <button style={S.addFirstBtn} onClick={openNew}>写第一篇日记</button>
+              </div>
+            ) : filteredEntries.map(e=>(
+              <div key={e.id} style={S.card} onClick={()=>{setViewId(e.id);setScreen("view");}}>
+                <div style={S.cardDate}>
+                  {e.date} <span style={S.wdayBadge}>周{getWeekday(e.date)}</span>
+                  {e.weather&&<span>{e.weather}</span>}
+                  {e.imported&&<span style={S.importedTag}>导入</span>}
+                </div>
+                <div style={S.cardMood}>{e.mood}</div>
+                <div style={S.cardTitle}>{e.title||"（无标题）"}</div>
+                <div style={S.cardPreview}>{(e.content||"").slice(0,60)}{(e.content||"").length>60?"…":""}</div>
+              </div>
+            ))}
+          </div>
+          <button style={S.fab} onClick={openNew}>＋</button>
+        </div>
+      )}
+
+      {/* ── EDITOR ── */}
+      {screen==="editor" && (
+        <div style={{background:"#FBF6EE",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+          <div style={S.editorHeader}>
+            <button style={S.backBtn} onClick={()=>setScreen("main")}>‹</button>
+            <h2 style={{flex:1,color:"#E8C97A",fontSize:16,fontWeight:400}}>{fmtDate(editDate)}</h2>
+            <button style={S.saveBtn} onClick={doSave}>保存</button>
+          </div>
+          <div style={{overflowY:"auto",flex:1,paddingBottom:20}}>
+            <div style={S.editorMeta}>
+              <div style={S.metaRow}>
+                <span style={S.metaLabel}>📅 日期</span>
+                <input type="date" style={S.metaInput} value={editDate} onChange={e=>setEditDate(e.target.value)}/>
+              </div>
+              <div style={S.metaRow}>
+                <span style={S.metaLabel}>😊 心情</span>
+                <div style={S.moodPicker}>
+                  {["😊","😄","😐","😢","😡","😴","🤔","🥰"].map(m=>(
+                    <span key={m} style={S.moodOpt(editMood===m)} onClick={()=>setEditMood(m)}>{m}</span>
+                  ))}
+                </div>
+              </div>
+              <div style={{...S.metaRow,borderBottom:"none"}}>
+                <span style={S.metaLabel}>🌤 天气</span>
+                <div style={{display:"flex",gap:8}}>
+                  {["☀️","⛅","🌧","⛈","🌨","🌫"].map(w=>(
+                    <span key={w} style={S.weatherOpt(editWeather===w)} onClick={()=>setEditWeather(w)}>{w}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={S.editorBody}>
+              <input style={S.titleInput} placeholder="标题（选填）" value={editTitle} onChange={e=>setEditTitle(e.target.value)}/>
+              <textarea style={S.contentInput} placeholder="今天发生了什么…写下你的心情与故事" value={editContent} onChange={e=>setEditContent(e.target.value)}/>
+              <div style={S.charCount}>{editContent.length} 字</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── VIEW ── */}
+      {screen==="view" && viewEntry && (
+        <div style={{background:"#FBF6EE",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+          <div style={S.viewHeader}>
+            <button style={S.backBtn} onClick={()=>setScreen("main")}>‹</button>
+            <h2 style={{flex:1,color:"#E8C97A",fontSize:16,fontWeight:400}}>{fmtMonth(viewEntry.date)}</h2>
+            <div style={S.viewActions}>
+              <button style={S.delBtn} onClick={doDelete}>删除</button>
+              <button style={S.iconBtn} onClick={()=>openEdit(viewEntry)}>✏️</button>
+            </div>
+          </div>
+          <div style={S.viewBody}>
+            <div style={S.viewDateStrip}>
+              <div style={S.bigDate}>{parseInt(viewEntry.date.split("-")[2])}</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:14,color:"#7a6890"}}>{fmtMonth(viewEntry.date)}</div>
+                <div style={{fontSize:16,color:"#2a1e3a",fontWeight:600,marginTop:2}}>星期{getWeekday(viewEntry.date)}</div>
+              </div>
+              <div style={{fontSize:36}}>{viewEntry.mood}</div>
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+              {viewEntry.weather&&<span style={S.tagChip}>{viewEntry.weather} 天气</span>}
+              {viewEntry.mood&&<span style={S.tagChip}>{viewEntry.mood} 心情</span>}
+              {viewEntry.imported&&<span style={S.tagChip}>📥 导入</span>}
+            </div>
+            <div style={S.viewTitle}>{viewEntry.title||"（无标题）"}</div>
+            <div style={S.viewContent} dangerouslySetInnerHTML={{__html:escHtml(viewEntry.content||"")}}/>
+          </div>
+        </div>
+      )}
+
+      {/* ── SETTINGS ── */}
+      {screen==="settings" && (
+        <div style={{background:"linear-gradient(160deg,#1a1025 0%,#2D1B4E 100%)",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+          <div style={S.settingsHeader}>
+            <button style={S.backBtn} onClick={()=>setScreen("main")}>‹</button>
+            <h2 style={{color:"#E8C97A",fontSize:20}}>设置</h2>
+          </div>
+          <div style={S.settingsBody}>
+            {[
+              {title:"安全",items:[
+                {icon:"🔑",t:"修改密码",s:"更改4位数字密码",fn:()=>setShowPwModal(true)},
+                {icon:"🔒",t:"锁定日记",s:"返回密码界面",fn:()=>{setPin("");setScreen("lock");}},
+              ]},
+              {title:"数据",items:[
+                {icon:"📤",t:"导出日记（JSON）",s:"可重新导入，保留所有信息",fn:doExportJSON},
+                {icon:"📄",t:"导出为文本",s:"导出为可读的 TXT 文件",fn:doExportTxt},
+                {icon:"📥",t:"导入日记",s:"从其他笔记本导入",fn:()=>setScreen("import")},
+                {icon:"🗑",t:"清除所有数据",s:"无法恢复，请谨慎操作",fn:()=>{if(confirm("⚠️ 确定清除所有日记？")){setEntries([]);save([]);showMsg("已清除");setScreen("main");}},red:true},
+              ]},
+              {title:"关于",items:[
+                {icon:"📖",t:"心记 · 私人日记",s:"版本 1.0 · 数据保存在本地"},
+              ]},
+            ].map(sec=>(
+              <div key={sec.title} style={S.settingsSection}>
+                <div style={S.sectionTitle}>{sec.title}</div>
+                <div style={S.settingsCard}>
+                  {sec.items.map((item,i)=>(
+                    <div key={i} style={{...S.settingsItem,borderBottom:i<sec.items.length-1?"1px solid rgba(255,255,255,0.06)":"none"}} onClick={item.fn}>
+                      <span style={S.sIcon}>{item.icon}</span>
+                      <div style={{flex:1}}>
+                        <div style={{...S.sTitle,color:item.red?"#e74c3c":"#fff"}}>{item.t}</div>
+                        <div style={S.sSub}>{item.s}</div>
+                      </div>
+                      {item.fn&&<span style={S.sArrow}>›</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── IMPORT ── */}
+      {screen==="import" && (
+        <div style={{background:"#FBF6EE",minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+          <div style={S.importHeader}>
+            <button style={S.backBtn} onClick={()=>setScreen("settings")}>‹</button>
+            <h2 style={{flex:1,color:"#E8C97A",fontSize:16,fontWeight:400}}>导入日记</h2>
+          </div>
+          <div style={{padding:"20px 16px",flex:1,overflowY:"auto"}}>
+            <div style={S.importZone} onClick={()=>document.getElementById("fileInput").click()}>
+              <div style={{fontSize:48,marginBottom:12}}>📂</div>
+              <div style={{fontSize:16,color:"#2a1e3a",marginBottom:8}}>点击选择文件导入</div>
+              <div style={{fontSize:13,color:"#7a6890",lineHeight:1.6}}>支持 .json 或 .txt 文件</div>
+              <input type="file" id="fileInput" style={{display:"none"}} accept=".json,.txt,.md" onChange={handleFileImport}/>
+            </div>
+            {[
+              {icon:"🔄",t:"心记 JSON 格式（推荐）",d:"从本App导出的JSON，可完整还原所有信息"},
+              {icon:"📝",t:"通用文本格式",d:"每篇日记以 YYYY-MM-DD 或 YYYY年MM月DD日 开头"},
+              {icon:"✍️",t:"手动粘贴导入",d:"复制粘贴到下方，系统自动识别日期分割"},
+            ].map((f,i)=>(
+              <div key={i} style={S.formatItem}>
+                <span style={{fontSize:24}}>{f.icon}</span>
+                <div><div style={{fontSize:14,fontWeight:600,color:"#2a1e3a"}}>{f.t}</div><div style={{fontSize:12,color:"#7a6890",marginTop:3,lineHeight:1.5}}>{f.d}</div></div>
+              </div>
+            ))}
+            <div style={{marginBottom:24,marginTop:8}}>
+              <div style={{fontSize:14,color:"#2a1e3a",marginBottom:8,fontWeight:600}}>✍️ 手动粘贴导入</div>
+              <textarea style={S.importTA} value={importText} onChange={e=>setImportText(e.target.value)} placeholder={"粘贴日记内容，每篇以日期开头：\n\n2024-01-15\n今天天气很好…\n\n2024-01-20\n标题：难忘的一天\n今天发生了…"}/>
+              <div style={{fontSize:12,color:"#7a6890",marginTop:6}}>💡 支持 YYYY-MM-DD、YYYY年MM月DD日 等格式</div>
+            </div>
+            <button style={S.importBtn} onClick={doImportTextarea}>📥 开始导入</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── PASSWORD MODAL ── */}
+      {showPwModal && (
+        <div style={S.overlay} onClick={e=>{if(e.target===e.currentTarget&&getPw())setShowPwModal(false);}}>
+          <div style={S.modal}>
+            <h3 style={{fontSize:18,color:"#2a1e3a",marginBottom:16}}>🔑 设置密码</h3>
+            <input type="number" style={S.modalInput} placeholder="新密码（4位数字）" value={newPw} onChange={e=>setNewPw(e.target.value.slice(0,4))} maxLength={4}/>
+            <input type="number" style={S.modalInput} placeholder="确认密码" value={confirmPw} onChange={e=>setConfirmPw(e.target.value.slice(0,4))} maxLength={4}/>
+            <div style={S.modalBtns}>
+              {getPw()&&<button style={S.modalBtnCancel} onClick={()=>setShowPwModal(false)}>取消</button>}
+              <button style={S.modalBtnConfirm} onClick={doSavePw}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── TOAST ── */}
+      <div style={S.toast(showToast)}>{toast}</div>
+    </div>
+  );
+}
